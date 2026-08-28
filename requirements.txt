@@ -1,0 +1,9 @@
+# Pinned direct dependency. Ultralytics pulls in numpy, matplotlib, pillow,
+# polars and opencv-python itself -- opencv-python is a hard requirement of
+# ultralytics, so listing opencv-python-headless here as well only installs a
+# second, shadowing copy of cv2. Hence libgl1 in the Dockerfile.
+#
+# torch and torchvision are NOT listed here: the Dockerfile installs the
+# CPU-only builds from PyTorch's own index first, and this file's install then
+# finds them already satisfied.
+ultralytics==8.4.131

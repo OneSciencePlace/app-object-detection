@@ -1,0 +1,22 @@
+# build output and language caches
+__pycache__/
+*.pyc
+*.o
+*.so
+node_modules/
+.Rproj.user/
+renv/library/
+build/
+dist/
+
+# container artifacts
+*.sif
+
+# local run output
+out/
+results/
+
+# editor leftovers
+.*.sw[a-p]
+*~
+.#*

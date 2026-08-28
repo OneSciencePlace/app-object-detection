@@ -1,0 +1,108 @@
+name: build-and-push
+
+# Builds the Dockerfile in this repo, pushes the OCI image to GHCR, then
+# converts that same image to a Singularity/Apptainer .sif and pushes it to
+# GHCR as an ORAS artifact. Nothing here is app-specific -- copy this file
+# verbatim into any other app-* repo.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      # The primary tag docker/metadata-action settled on, e.g. "latest" on
+      # main or "1.2.0" for tag v1.2.0. The sif job reuses it.
+      version: ${{ steps.meta.outputs.version }}
+      # The fully-qualified image name, lowercased. The sif job reuses it.
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # OCI reference grammar allows only lowercase in a repository name, but
+      # github.repository preserves the owner's capitalisation -- so an owner
+      # like "OneSciencePlace" produces an invalid reference. Fold it once here
+      # and use the result everywhere.
+      - name: Derive the image name
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  sif:
+    needs: docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      APPTAINER_VERSION: '1.5.2'
+    steps:
+      # Installed from the upstream release .deb rather than a marketplace
+      # action, for two reasons: the .deb ships the AppArmor profile that lets
+      # Apptainer create unprivileged user namespaces on Ubuntu 24.04+, and a
+      # plain `run:` step has no bundled Node.js runtime to be deprecated out
+      # from under it.
+      - name: Install Apptainer
+        run: |
+          . /etc/os-release
+          case "${VERSION_ID%%.*}" in
+            22|24) DEB="apptainer_${APPTAINER_VERSION}_amd64.deb" ;;
+            *)     DEB="apptainer_${APPTAINER_VERSION}-trixie+_amd64.deb" ;;
+          esac
+          curl -fsSL -O "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/${DEB}"
+          sudo apt-get update
+          sudo apt-get install -y "./${DEB}"
+          rm -f "${DEB}"
+          apptainer --version
+
+      - name: Build .sif from the image we just pushed
+        env:
+          APPTAINER_DOCKER_USERNAME: ${{ github.actor }}
+          APPTAINER_DOCKER_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          apptainer build app.sif \
+            docker://${{ needs.docker.outputs.image }}:${{ needs.docker.outputs.version }}
+          ls -lh app.sif
+
+      - name: Push .sif to GHCR as an ORAS artifact
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | apptainer registry login -u ${{ github.actor }} --password-stdin oras://ghcr.io
+          apptainer push app.sif \
+            oras://${{ needs.docker.outputs.image }}-sif:${{ needs.docker.outputs.version }}

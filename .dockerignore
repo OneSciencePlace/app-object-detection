@@ -1,0 +1,9 @@
+.git
+.github
+.gitignore
+README.md
+*.sif
+out/
+results/
+__pycache__/
+node_modules/
