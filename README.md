@@ -47,15 +47,36 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -v "$PWD:/data" ghcr.io/onescienceplace/app-object-detection:latest \
   --image photo.jpg --conf 0.4
 
-# Apptainer / Singularity (HPC)
-apptainer pull oras://ghcr.io/onescienceplace/app-object-detection-sif:latest
-apptainer run app-object-detection-sif_latest.sif --image photo.jpg --conf 0.4
+# Apptainer / Singularity, under the OSP batch run profile: a private /tmp,
+# /var/tmp and $HOME, none of the host's environment, and only the job
+# directory (here the current one) mounted.
+apptainer pull oras://ghcr.io/onescienceplace/app-object-detection-sif:latest   # production pins <version>@sha256:<digest>
+apptainer run \
+  --contain --cleanenv --no-mount bind-paths,cwd \
+  --pwd "$PWD" --bind "$PWD:$PWD" \
+  --env TMPDIR="$PWD/tmp" \
+  app-object-detection-sif_latest.sif --image photo.jpg --conf 0.4
 ```
 
-Apptainer runs with your host working directory as the CWD and the container
-filesystem read-only, which is why the weights live at an absolute path and
-`HOME` / `XDG_CACHE_HOME` / `YOLO_CONFIG_DIR` / `MPLCONFIGDIR` all point at
-`/tmp`.
+A Tapis app definition uses that profile with `${JobWorkingDir}` for the
+directory. On a system where batch jobs share hosts with interactive sessions,
+it adds that system's batch additions (on the AWS test system, `--pid --ipc`).
+The image needs nothing else: it reads its input from, and writes
+`<stem>_detected.jpg` and `detections.json` to, the working directory, and
+holds no secret and serves nothing.
+
+The container filesystem is read-only, which is why the weights live at an
+absolute path. `HOME`, `XDG_CACHE_HOME`, `YOLO_CONFIG_DIR` and `MPLCONFIGDIR`
+default to fixed paths under `/tmp` in the image; `entrypoint.sh` gives each
+run its own instead (the home in a fresh directory under `/tmp`, the caches in
+one of the same name under `$TMPDIR`), so runs sharing a node's `/tmp` never
+collide. A value the job sets itself is kept.
+
+`TMPDIR` is for bulk scratch. If an inherited one is not reachable in the
+container, `entrypoint.sh` falls back to `/tmp` and says so; set
+`TMPDIR=<job directory>/tmp` rather than binding a scratch *parent*
+(`--bind /scratch`), which would expose every other job's directory to the
+same uid.
 
 ## Pinned versions
 
@@ -89,7 +110,9 @@ docker run --rm --user "$(id -u):$(id -g)" \
 
 docker save app-object-detection:dev -o aod.tar
 apptainer build aod.sif docker-archive://aod.tar
-apptainer run aod.sif --image photo.jpg --conf 0.4
+apptainer run --contain --cleanenv --no-mount bind-paths,cwd \
+  --pwd "$PWD" --bind "$PWD:$PWD" --env TMPDIR="$PWD/tmp" \
+  aod.sif --image photo.jpg --conf 0.4
 ```
 
 ### Why `--user`

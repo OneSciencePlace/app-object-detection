@@ -26,8 +26,10 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# A .sif is mounted read-only, so send every library scratch path to /tmp and
-# bake the model weights in at a fixed absolute path (/app/yolo11n.pt).
+# A .sif is mounted read-only, so every library scratch path has a fallback in
+# /tmp and the model weights are baked in at a fixed absolute path
+# (/app/yolo11n.pt). entrypoint.sh moves the /tmp fallbacks still in effect to
+# a directory of the run's own at start (plan B-5).
 ENV HOME=/tmp \
     XDG_CACHE_HOME=/tmp/.cache \
     YOLO_CONFIG_DIR=/tmp/Ultralytics \
@@ -37,6 +39,15 @@ ENV HOME=/tmp \
 # Swap for yolo26n.pt (newest generation) or a larger size (s/m/l/x) freely --
 # the API is identical, only the weights file changes.
 RUN python -c "from ultralytics import YOLO; YOLO('yolo11n.pt')"
+
+# No setuid or setgid files (plan S-7). The image holds no secret and runs no
+# server, but a setuid program is a way up in any container run without
+# no-new-privileges; Apptainer mounts the image nosuid anyway. Keep this after
+# the last package install; the build fails if any are left.
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + || true; \
+    _left="$(find / -xdev -perm /6000 -type f 2>/dev/null | head -5)"; \
+    if [ -n "$_left" ]; then printf '%s\n' "$_left" >&2; \
+        echo "setuid/setgid files remain (above)" >&2; exit 1; fi
 
 COPY run.py entrypoint.sh /app/
 # Explicit modes. COPY preserves the build context's permissions, so a checkout
